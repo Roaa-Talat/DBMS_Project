@@ -381,13 +381,15 @@ select_from_table() {
     echo "1. Select All Data"
     echo "2. Select Specific Columns"
     echo "3. Select With Condition (WHERE)"
+    echo "4. Select Specific Columns with Condition"  
     echo "====================================="
-    read -p "Enter your choice [1-3]: " select_choice
+    read -p "Enter your choice [1-4]: " select_choice  
     
     case $select_choice in
         1) select_all "$db_name" "$table_name" ;;
         2) select_columns "$db_name" "$table_name" ;;
         3) select_where "$db_name" "$table_name" ;;
+        4) select_specific_column_with_condition "$db_name" "$table_name" ;;  # Add this line
         *) echo "Invalid choice! Showing all data by default."; select_all "$db_name" "$table_name" ;;
     esac
 }
@@ -588,7 +590,99 @@ select_where() {
     fi
 }
 
+select_specific_column_with_condition() {
+    local db_name=$1
+    local table_name=$2
+    
+    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
+    local data_file="$DB_DIR/$db_name/${table_name}_data"
+    
+    # Read metadata
+    source <(grep -v '^$' "$meta_file" | sed 's/:/=/')
+    
+    # Show available columns
+    echo "Available columns:"
+    for ((i=1; i<=col_count; i++)); do
+        col_name_var="col${i}_name"
+        col_type_var="col${i}_type"
+        echo "$i. ${!col_name_var} (${!col_type_var})"
+    done
+    
+    read -p "Enter column number to search in: " where_col
+    if [[ ! "$where_col" =~ ^[1-9][0-9]*$ ]] || [ "$where_col" -gt "$col_count" ]; then
+        echo "Error: Invalid column number!"
+        return
+    fi
+    
+    col_name_var="col${where_col}_name"
+    col_type_var="col${where_col}_type"
+	    
+    read -p "Enter value to match in '${!col_name_var}': " where_value
+    columns=()
+    for ((i=1; i<=col_count; i++))
+    do
+        col_name_var="col${i}_name"    
+        columns+=("${!col_name_var}")
+    done
 
+    echo "--- Columns to Display ---"
+    for i in "${!columns[@]}"; do
+        echo "$((i+1))) ${columns[$i]}"
+    done
+
+    read -p "Enter column numbers to display (e.g., 1 3): " -a choice_cols
+
+    # Create header for selected columns
+    header=""
+    for c in "${choice_cols[@]}"; do
+        if [[ -n "$header" ]]; then
+            header+="|${columns[$((c-1))]}"
+        else
+            header+="${columns[$((c-1))]}"
+        fi
+    done
+
+    echo
+    echo "----- Matching Rows -----"
+
+    # Create a temp file with filtered data
+    temp_file=$(mktemp)
+    
+    # Filter records based on condition
+    while IFS='|' read -ra fields; do
+        if [ "${fields[$((where_col-1))]}" == "$where_value" ]; then
+            # Build the output row with selected columns
+            row=""
+            for c in "${choice_cols[@]}"; do
+                if [[ -n "$row" ]]; then
+                    row+="|${fields[$((c-1))]}"
+                else
+                    row+="${fields[$((c-1))]}"
+                fi
+            done
+            echo "$row" >> "$temp_file"
+        fi
+    done < "$data_file"
+
+    # Display the results
+    if [ -s "$temp_file" ]; then
+        formatted_output=$( (echo "$header"; cat "$temp_file") | column -t -s '|' )
+        echo "$formatted_output" | head -1  # Show header
+        echo "-------------------------------------"
+        echo "$formatted_output" | tail -n +2  # Show data
+        echo "-------------------------------------"
+        echo "Matching records: $(wc -l < "$temp_file")"
+    else
+        echo "$header" | column -t -s '|'
+        echo "-------------------------------------"
+        echo "No matching records found!"
+        echo "-------------------------------------"
+        echo "Matching records: 0"
+    fi
+    
+    # Clean up temp file
+    rm -f "$temp_file"
+}
 # Delete from table function
 delete_from_table() {
     local db_name=$1
