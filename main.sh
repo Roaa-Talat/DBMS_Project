@@ -551,28 +551,43 @@ select_where() {
         fi
     done
     
-    # Filter and display data using grep
+    # Filter and display data 
     if [ -s "$data_file" ]; then
-        # Use grep to filter rows and format output
-        formatted_output=$(grep "^[^|]*|$where_value|" "$data_file" | (echo "$header"; cat) | column -t -s '|')
+        # match specific column
+        matching_data=$(awk -F'|' -v col="$where_col" -v value="$where_value" '
+            BEGIN {found=0}
+            $col == value {
+                print $0
+                found=1
+            }
+            END {
+                if (found == 0) exit 1
+            }
+        ' "$data_file")
         
-        if [ -n "$formatted_output" ]; then
+        if [ $? -eq 0 ]; then
+            # Format and display the data
+            formatted_output=$(echo "$matching_data" | (echo "$header"; cat) | column -t -s '|')
             echo "$formatted_output" | head -1  # Show header
             echo "-------------------------------------"
             echo "$formatted_output" | tail -n +2  # Show data
+            echo "-------------------------------------"
+            
+            # Count matching records
+            count=$(echo "$matching_data" | wc -l)
+            echo "Matching records: $count"
         else
             echo "$header" | column -t -s '|'
             echo "-------------------------------------"
             echo "No matching records found!"
+            echo "-------------------------------------"
+            echo "Matching records: 0"
         fi
-        
-        count=$(grep -c "^[^|]*|$where_value|" "$data_file")
-        echo "-------------------------------------"
-        echo "Matching records: $count"
     else
         echo "No data found!"
     fi
 }
+
 
 # Delete from table function
 delete_from_table() {
