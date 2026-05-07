@@ -3,6 +3,14 @@
 # SQL Parser for Bash DBMS
 # Supports: CREATE DATABASE, USE, CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, DROP TABLE
 
+# Source the shared DBMS library
+if [ -f "dbms_lib.sh" ]; then
+    source "dbms_lib.sh"
+else
+    echo "Error: dbms_lib.sh not found!"
+    exit 1
+fi
+
 # Global variable to store current database for SQL mode
 SQL_CURRENT_DB=""
 
@@ -91,18 +99,7 @@ parse_create_database() {
     
     if [[ "$sql_cmd" =~ ^[Cc][Rr][Ee][Aa][Tt][Ee][[:space:]]+[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee][[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*\;?$ ]]; then
         local db_name="${BASH_REMATCH[1]}"
-        
-        if [[ ! "$db_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-            echo "Error: Database name must start with a letter or underscore and contain only alphanumeric characters."
-            return
-        fi
-        
-        if [ -d "$DB_DIR/$db_name" ]; then
-            echo "Error: Database '$db_name' already exists!"
-        else
-            mkdir -p "$DB_DIR/$db_name"
-            echo "Database '$db_name' created successfully!"
-        fi
+        create_database "$db_name"
     else
         echo "Error: Invalid CREATE DATABASE syntax"
         echo "Usage: CREATE DATABASE database_name;"
@@ -115,7 +112,7 @@ parse_use_database() {
     if [[ "$sql_cmd" =~ ^[Uu][Ss][Ee][[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*\;?$ ]]; then
         local db_name="${BASH_REMATCH[1]}"
         
-        if [ -d "$DB_DIR/$db_name" ]; then
+        if database_exists "$db_name"; then
             SQL_CURRENT_DB="$db_name"
             echo "Database changed to '$db_name'"
         else
@@ -220,23 +217,7 @@ create_table_from_sql() {
         shift
     done
     
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' already exists!"
-        return
-    fi
-    
-    echo "col_count:$col_count" > "$meta_file"
-    for ((i=0; i<col_count; i++)); do
-        echo "col$((i+1))_name:${col_names[$i]}" >> "$meta_file"
-        echo "col$((i+1))_type:${col_types[$i]}" >> "$meta_file"
-        echo "col$((i+1))_primary:${is_primary[$i]}" >> "$meta_file"
-    done
-    
-    touch "$data_file"
-    echo "Table '$table_name' created successfully!"
+    create_table "$db_name" "$table_name" "$col_count" "${col_names[@]}" "${col_types[@]}" "${is_primary[@]}"
 }
 
 parse_insert_into() {
@@ -269,50 +250,7 @@ insert_into_table_sql() {
     local db_name="$1"
     local table_name="$2"
     shift 2
-    
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ ! -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' does not exist!"
-        return
-    fi
-    
-    col_count=$(grep "^col_count:" "$meta_file" | cut -d: -f2)
-    
-    if [ $# -ne $col_count ]; then
-        echo "Error: Expected $col_count values, got $#"
-        return
-    fi
-    
-    declare -a values=("$@")
-    
-    for ((i=1; i<=col_count; i++)); do
-        col_type=$(grep "^col${i}_type:" "$meta_file" | cut -d: -f2)
-        is_primary=$(grep "^col${i}_primary:" "$meta_file" | cut -d: -f2)
-        value="${values[$((i-1))]}"
-        
-        if [ "$is_primary" -eq 1 ]; then
-            if [ -z "$value" ]; then
-                echo "Error: Primary key cannot be empty!"
-                return
-            fi
-            
-            if grep -q "^$value|" "$data_file" 2>/dev/null; then
-                echo "Error: Primary key '$value' already exists!"
-                return
-            fi
-        fi
-        
-        if [ "$col_type" == "int" ] && [[ ! "$value" =~ ^-?[0-9]+$ ]]; then
-            echo "Error: Column $i must be integer, got '$value'"
-            return
-        fi
-    done
-    
-    row_data=$(IFS='|'; echo "${values[*]}")
-    echo "$row_data" >> "$data_file"
-    echo "1 row inserted successfully!"
+    insert_into_table "$db_name" "$table_name" "$@"
 }
 
 parse_select() {
@@ -358,78 +296,11 @@ parse_select() {
     fi
 }
 
-get_column_index() {
-    local db_name="$1"
-    local table_name="$2"
-    local col_name="$3"
-    
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    
-    if [ ! -f "$meta_file" ]; then
-        return
-    fi
-    
-    for i in {1..100}; do
-        col_line=$(grep "^col${i}_name:" "$meta_file" 2>/dev/null)
-        if [ -n "$col_line" ]; then
-            found_name=$(echo "$col_line" | cut -d: -f2)
-            if [ "$found_name" == "$col_name" ]; then
-                echo "$i"
-                return
-            fi
-        else
-            break
-        fi
-    done
-    echo ""
-}
-
 select_columns_sql() {
     local db_name="$1"
     local table_name="$2"
     shift 2
-    
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ ! -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' does not exist!"
-        return
-    fi
-    
-    declare -a col_indices
-    declare -a col_names_display
-    
-    for col_name in "$@"; do
-        col_index=$(get_column_index "$db_name" "$table_name" "$col_name")
-        if [ -z "$col_index" ]; then
-            echo "Error: Column '$col_name' not found in table '$table_name'"
-            return
-        fi
-        col_indices+=("$col_index")
-        col_names_display+=("$col_name")
-    done
-    
-    header=$(IFS='|'; echo "${col_names_display[*]}")
-    
-    if [ -s "$data_file" ]; then
-        cut_fields=$(IFS=,; echo "${col_indices[*]}")
-        
-        formatted_output=$( (echo "$header"; cut -d'|' -f"$cut_fields" "$data_file") | column -t -s '|' )
-        
-        echo "====================================="
-        echo "     Selected Columns from $table_name"
-        echo "====================================="
-        echo "$formatted_output" | head -1
-        echo "-------------------------------------"
-        if [ $(echo "$formatted_output" | wc -l) -gt 1 ]; then
-            echo "$formatted_output" | tail -n +2
-        fi
-        echo "-------------------------------------"
-        echo "Total records: $(wc -l < "$data_file")"
-    else
-        echo "No data found!"
-    fi
+    select_columns "$db_name" "$table_name" "$@"
 }
 
 parse_where_clause() {
@@ -471,53 +342,7 @@ select_where_sql() {
     local where_col_index="$3"
     local where_value="$4"
     
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ ! -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' does not exist!"
-        return
-    fi
-    
-    source <(grep -v '^$' "$meta_file" | sed 's/:/=/')
-    
-    header=""
-    for ((i=1; i<=col_count; i++)); do
-        col_name_var="col${i}_name"
-        header+="${!col_name_var}"
-        if [ $i -lt $col_count ]; then
-            header+="|"
-        fi
-    done
-    
-    if [ -s "$data_file" ]; then
-        temp_file=$(mktemp)
-        
-        awk -F'|' -v wcol="$where_col_index" -v value="$where_value" '
-        $wcol == value {print $0}
-        ' "$data_file" > "$temp_file"
-        
-        if [ -s "$temp_file" ]; then
-            formatted_output=$( (echo "$header"; cat "$temp_file") | column -t -s '|' )
-            
-            echo "====================================="
-            echo "     Data from $table_name WHERE condition"
-            echo "====================================="
-            echo "$formatted_output" | head -1
-            echo "-------------------------------------"
-            echo "$formatted_output" | tail -n +2
-            echo "-------------------------------------"
-            echo "Matching records: $(wc -l < "$temp_file")"
-        else
-            echo "$header" | column -t -s '|'
-            echo "-------------------------------------"
-            echo "No matching records found!"
-        fi
-        
-        rm "$temp_file"
-    else
-        echo "No data found!"
-    fi
+    select_where "$db_name" "$table_name" "$where_col_index" "$where_value"
 }
 
 select_where_columns_sql() {
@@ -527,68 +352,8 @@ select_where_columns_sql() {
     local where_value="$4"
     local columns="$5"
     
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ ! -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' does not exist!"
-        return
-    fi
-    
     IFS=' ' read -ra col_array <<< "$columns"
-    
-    declare -a col_indices
-    declare -a col_names_display
-    
-    for col_name in "${col_array[@]}"; do
-        col_index=$(get_column_index "$db_name" "$table_name" "$col_name")
-        if [ -z "$col_index" ]; then
-            echo "Error: Column '$col_name' not found in table '$table_name'"
-            return
-        fi
-        col_indices+=("$col_index")
-        col_names_display+=("$col_name")
-    done
-    
-    header=$(IFS='|'; echo "${col_names_display[*]}")
-    
-    if [ -s "$data_file" ]; then
-        temp_file=$(mktemp)
-        
-        awk -F'|' -v wcol="$where_col_index" -v value="$where_value" -v fields="${col_indices[*]}" '
-        BEGIN {
-            split(fields, f, " ")
-            OFS="|"
-        }
-        $wcol == value {
-            output = ""
-            for (i=1; i<=length(f); i++) {
-                if (i > 1) output = output OFS
-                output = output $f[i]
-            }
-            print output
-        }
-        ' "$data_file" > "$temp_file"
-        
-        if [ -s "$temp_file" ]; then
-            formatted_output=$( (echo "$header"; cat "$temp_file") | column -t -s '|' )
-            
-            echo "====================================="
-            echo "     Selected Columns from $table_name WHERE condition"
-            echo "====================================="
-            echo "$formatted_output" | head -1
-            echo "-------------------------------------"
-            echo "$formatted_output" | tail -n +2
-            echo "-------------------------------------"
-            echo "Matching records: $(wc -l < "$temp_file")"
-        else
-            echo "No matching records found!"
-        fi
-        
-        rm "$temp_file"
-    else
-        echo "No data found!"
-    fi
+    select_columns "$db_name" "$table_name" "${col_array[@]}"
 }
 
 parse_update() {
@@ -633,67 +398,7 @@ update_table_sql() {
     local where_col="$5"
     local where_value="$6"
     
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ ! -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' does not exist!"
-        return
-    fi
-    
-    local update_col_index=$(get_column_index "$db_name" "$table_name" "$update_col")
-    local where_col_index=$(get_column_index "$db_name" "$table_name" "$where_col")
-    
-    if [ -z "$update_col_index" ]; then
-        echo "Error: Column '$update_col' not found!"
-        return
-    fi
-    
-    if [ -z "$where_col_index" ]; then
-        echo "Error: Column '$where_col' not found!"
-        return
-    fi
-    
-    local col_type=$(grep "^col${update_col_index}_type:" "$meta_file" | cut -d: -f2)
-    
-    if [ "$col_type" == "int" ] && [[ ! "$new_value" =~ ^-?[0-9]+$ ]]; then
-        echo "Error: Column '$update_col' must be integer, got '$new_value'"
-        return
-    fi
-    
-    local is_primary=$(grep "^col${update_col_index}_primary:" "$meta_file" | cut -d: -f2)
-    
-    if [ "$is_primary" -eq 1 ]; then
-        temp_file=$(mktemp)
-        while IFS= read -r line; do
-            IFS='|' read -ra fields <<< "$line"
-            if [ "${fields[$((where_col_index-1))]}" != "$where_value" ] && [ "${fields[$((update_col_index-1))]}" == "$new_value" ]; then
-                echo "Error: Primary key '$new_value' already exists in another record!"
-                rm "$temp_file"
-                return
-            fi
-        done < "$data_file"
-        rm "$temp_file"
-    fi
-    
-    temp_file=$(mktemp)
-    updated_count=0
-    
-    while IFS= read -r line; do
-        IFS='|' read -ra fields <<< "$line"
-        
-        if [ "${fields[$((where_col_index-1))]}" == "$where_value" ]; then
-            fields[$((update_col_index-1))]="$new_value"
-            updated_line=$(IFS='|'; echo "${fields[*]}")
-            echo "$updated_line" >> "$temp_file"
-            ((updated_count++))
-        else
-            echo "$line" >> "$temp_file"
-        fi
-    done < "$data_file"
-    
-    mv "$temp_file" "$data_file"
-    echo "$updated_count row(s) updated successfully!"
+    update_table "$db_name" "$table_name" "$update_col" "$new_value" "$where_col" "$where_value"
 }
 
 parse_delete() {
@@ -732,36 +437,7 @@ delete_from_table_sql() {
     local where_col="$3"
     local where_value="$4"
     
-    local meta_file="$DB_DIR/$db_name/${table_name}_meta"
-    local data_file="$DB_DIR/$db_name/${table_name}_data"
-    
-    if [ ! -f "$meta_file" ]; then
-        echo "Error: Table '$table_name' does not exist!"
-        return
-    fi
-    
-    local where_col_index=$(get_column_index "$db_name" "$table_name" "$where_col")
-    
-    if [ -z "$where_col_index" ]; then
-        echo "Error: Column '$where_col' not found!"
-        return
-    fi
-    
-    temp_file=$(mktemp)
-    deleted_count=0
-    
-    while IFS= read -r line; do
-        IFS='|' read -ra fields <<< "$line"
-        
-        if [ "${fields[$((where_col_index-1))]}" == "$where_value" ]; then
-            ((deleted_count++))
-        else
-            echo "$line" >> "$temp_file"
-        fi
-    done < "$data_file"
-    
-    mv "$temp_file" "$data_file"
-    echo "$deleted_count row(s) deleted successfully!"
+    delete_from_table "$db_name" "$table_name" "$where_col" "$where_value"
 }
 
 parse_drop_table() {
@@ -774,17 +450,7 @@ parse_drop_table() {
     
     if [[ "$sql_cmd" =~ ^[Dd][Rr][Oo][Pp][[:space:]]+[Tt][Aa][Bb][Ll][Ee][[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)$ ]]; then
         local table_name="${BASH_REMATCH[1]}"
-        
-        local meta_file="$DB_DIR/$SQL_CURRENT_DB/${table_name}_meta"
-        local data_file="$DB_DIR/$SQL_CURRENT_DB/${table_name}_data"
-        
-        if [ -f "$meta_file" ]; then
-            rm "$meta_file" "$data_file"
-            echo "Table '$table_name' dropped successfully!"
-        else
-            echo "Error: Table '$table_name' does not exist!"
-        fi
-        
+        drop_table "$SQL_CURRENT_DB" "$table_name"
     else
         echo "Error: Invalid DROP TABLE syntax"
         echo "Usage: DROP TABLE table_name;"
@@ -797,17 +463,11 @@ parse_drop_database() {
     if [[ "$sql_cmd" =~ ^[Dd][Rr][Oo][Pp][[:space:]]+[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee][[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*\;?$ ]]; then
         local db_name="${BASH_REMATCH[1]}"
         
-        if [ -d "$DB_DIR/$db_name" ]; then
-            if [ "$SQL_CURRENT_DB" == "$db_name" ]; then
-                SQL_CURRENT_DB=""
-            fi
-            
-            rm -r "$DB_DIR/$db_name"
-            echo "Database '$db_name' dropped successfully!"
-        else
-            echo "Error: Database '$db_name' does not exist!"
+        if [ "$SQL_CURRENT_DB" == "$db_name" ]; then
+            SQL_CURRENT_DB=""
         fi
         
+        drop_database "$db_name"
     else
         echo "Error: Invalid DROP DATABASE syntax"
         echo "Usage: DROP DATABASE database_name;"

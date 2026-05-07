@@ -1,36 +1,34 @@
 #!/bin/bash
 
-# Bash DBMS GUI Minimal Installer
+# Bash DBMS Installation Script
 
-echo "Bash DBMS GUI Installation"
+echo "Bash DBMS Installation"
 echo "=========================="
 
-# Check for Zenity (REQUIRED)
+# Check for Zenity (required for GUI)
 if ! command -v zenity &> /dev/null; then
-    echo "Error: Zenity is not installed!"
-    echo "Please install Zenity first."
-    exit 1
+    echo "Warning: Zenity is not installed!"
+    echo "GUI mode will not be available."
+    echo "Install Zenity: sudo apt-get install zenity (Ubuntu/Debian)"
+    echo ""
 fi
 
-# Make main GUI executable
-if [ -f "gui_dbms.sh" ]; then
-    chmod +x gui_dbms.sh
-    echo "✓ GUI script prepared"
-else
-    echo "Error: gui_dbms.sh not found!"
-    exit 1
-fi
+# Make all scripts executable
+for script in dbms_lib.sh main.sh gui_dbms.sh sql_parser.sh run_gui.sh; do
+    if [ -f "$script" ]; then
+        chmod +x "$script"
+        echo "✓ Made $script executable"
+    fi
+done
 
 # Create databases directory
 mkdir -p databases
 echo "✓ Data directory created"
 
-# Check for SQL parser 
-if [ -f "sql_parser.sh" ]; then
-    chmod +x sql_parser.sh
-    echo "✓ SQL mode enabled"
-fi
-
 echo ""
 echo "Installation complete!"
-echo "Run: ./gui_dbms.sh"
+echo ""
+echo "Usage:"
+echo "  CLI Mode:  ./main.sh"
+echo "  GUI Mode:  ./gui_dbms.sh (requires Zenity)"
+echo "  SQL Mode:  Select option 6 in CLI mode"

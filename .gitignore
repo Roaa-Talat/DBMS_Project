@@ -1,0 +1,32 @@
+# Bash DBMS .gitignore
+
+# Data directories
+databases/
+!databases/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+
+# Backup files
+*.bak
+*.backup
+
+# Test outputs
+test_output/
+test_results/
+
+# Installation artifacts
+*.exe
+*.msi
